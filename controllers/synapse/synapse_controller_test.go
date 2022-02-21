@@ -425,13 +425,19 @@ var _ = Describe("Integration tests for the Synapse controller", Ordered, Label(
 
 				By("Checking that the PostgresCluster's OwnerReference contains the Synapse instance")
 				Expect(createdPostgresCluster.ObjectMeta.OwnerReferences).To(ContainElement(expectedOwnerReference))
-
-				// Once the PostgresCluster has been created, we simulate the
-				// postgres-operator reconciliation.
-				doPostgresControllerJob()
 			})
 
 			It("Should update the Synapse status", func() {
+				By("Checking that the controller detects the Database as not ready")
+				Expect(k8sClient.Get(ctx, synapseLookupKey, synapse)).Should(Succeed())
+				Expect(synapse.Status.DatabaseConnectionInfo.State).Should(Equal("NOT READY"))
+
+				// Once the PostgresCluster has been created, we simulate the
+				// postgres-operator reconciliation.
+				By("Simulating the postgres-operator controller job")
+				doPostgresControllerJob()
+
+				By("Checking that the Synapse Status is correctly updated")
 				Eventually(func(g Gomega) {
 					g.Expect(k8sClient.Get(ctx, synapseLookupKey, synapse)).Should(Succeed())
 
@@ -439,7 +445,7 @@ var _ = Describe("Integration tests for the Synapse controller", Ordered, Label(
 					g.Expect(synapse.Status.DatabaseConnectionInfo.DatabaseName).Should(Equal("synapse"))
 					g.Expect(synapse.Status.DatabaseConnectionInfo.User).Should(Equal("synapse"))
 					g.Expect(synapse.Status.DatabaseConnectionInfo.Password).Should(Equal(string(base64encode("VerySecureSyn@psePassword!"))))
-					// g.Expect(synapse.Status.DatabaseConnectionInfo.State).Should(Equal("RUNNING"))
+					g.Expect(synapse.Status.DatabaseConnectionInfo.State).Should(Equal("READY"))
 				}, timeout, interval).Should(Succeed())
 			})
 

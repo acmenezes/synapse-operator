@@ -46,9 +46,9 @@ type SynapseReconciler struct {
 }
 
 type HomeserverPgsqlDatabase struct {
-	Name string `yaml:"name"`
-	// TxnLimit int64  `yaml:"txn_limit"`
-	Args struct {
+	Name     string `yaml:"name"`
+	TxnLimit int64  `yaml:"txn_limit"`
+	Args     struct {
 		User     string `yaml:"user"`
 		Password string `yaml:"password"`
 		Database string `yaml:"database"`
@@ -96,32 +96,9 @@ func (r *SynapseReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	var objectMeta metav1.ObjectMeta
 
 	if synapse.Spec.CreateNewPostgreSQL {
-		createdPostgresCluster := pgov1beta1.PostgresCluster{}
-
-		objectMeta = setObjectMeta(synapse.Name, synapse.Namespace, map[string]string{})
-		r.reconcileResource(r.configMapForPostgresCluster, &synapse, &corev1.ConfigMap{}, objectMeta)
-
-		objectMeta = setObjectMeta(synapse.Name, synapse.Namespace, map[string]string{})
-		r.reconcileResource(r.postgresClusterForSynapse, &synapse, &createdPostgresCluster, objectMeta)
-
-		// Wait for Pgcluster to be up
-		// }
-
-		if !r.isPostgresClusterReady(createdPostgresCluster) {
-			// TODO: update synapse.status.databaseConnectionInfo.State
-			return ctrl.Result{RequeueAfter: time.Duration(5)}, nil
+		if result, err := r.createPostgresClusterForSynapse(ctx, synapse, cm); err != nil {
+			return result, err
 		}
-
-		// Update Synapse Status with PostgreSQL DB information
-		if err := r.updateSynapseStatusWithPostgreSQLInfos(ctx, &synapse, createdPostgresCluster); err != nil {
-			return ctrl.Result{}, err
-		}
-
-		// Update configMap data with PostgreSQL DB information
-		if err := r.updateSynapseConfigMap(ctx, &cm, synapse); err != nil {
-			return ctrl.Result{}, err
-		}
-
 	}
 
 	objectMeta = setObjectMeta(synapse.Name, synapse.Namespace, map[string]string{})
@@ -209,6 +186,101 @@ func (r *SynapseReconciler) ParseHomeserverConfigMap(ctx context.Context, synaps
 		"server_name:", synapse.Status.HomeserverConfiguration.ServerName,
 		"report_stats:", synapse.Status.HomeserverConfiguration.ReportStats,
 	)
+
+	return nil
+}
+
+func (r *SynapseReconciler) createPostgresClusterForSynapse(
+	ctx context.Context,
+	synapse synapsev1alpha1.Synapse,
+	cm corev1.ConfigMap,
+) (ctrl.Result, error) {
+	var objectMeta metav1.ObjectMeta
+	createdPostgresCluster := pgov1beta1.PostgresCluster{}
+
+	// Create ConfigMap for PostgresCluster
+	objectMeta = setObjectMeta(synapse.Name, synapse.Namespace, map[string]string{})
+	r.reconcileResource(r.configMapForPostgresCluster, &synapse, &corev1.ConfigMap{}, objectMeta)
+
+	// Create PostgresCluster for Synapse
+	objectMeta = setObjectMeta(synapse.Name, synapse.Namespace, map[string]string{})
+	r.reconcileResource(r.postgresClusterForSynapse, &synapse, &createdPostgresCluster, objectMeta)
+
+	// Wait for PostgresCluster to be up
+	if err := r.Get(ctx, types.NamespacedName{Name: createdPostgresCluster.Name, Namespace: createdPostgresCluster.Namespace}, &createdPostgresCluster); err != nil {
+		return ctrl.Result{}, err
+	}
+	if !r.isPostgresClusterReady(createdPostgresCluster) {
+		r.updateSynapseStatusDatabaseState(ctx, synapse, "NOT READY")
+		// TODO: update synapse.status.databaseConnectionInfo.State
+		err := errors.New("postgreSQL Database not ready yet")
+		return ctrl.Result{RequeueAfter: time.Duration(5)}, err
+	}
+
+	// Update Synapse Status with PostgreSQL DB information
+	if err := r.updateSynapseStatusWithPostgreSQLInfos(ctx, &synapse, createdPostgresCluster); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// Update configMap data with PostgreSQL DB information
+	if err := r.updateSynapseConfigMap(ctx, &cm, synapse); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	return ctrl.Result{}, nil
+}
+
+func (r *SynapseReconciler) isPostgresClusterReady(p pgov1beta1.PostgresCluster) bool {
+	var status_found bool
+
+	// // Get latest version of PostgresCluster
+	// if err := r.Client.Get(context.TODO(), types.NamespacedName{Name: p.Name, Namespace: p.Namespace}, &p); err != nil {
+	// 	return false
+	// }
+
+	// Going through instance Specs
+	for _, instance_spec := range p.Spec.InstanceSets {
+		status_found = false
+		for _, instance_status := range p.Status.InstanceSets {
+			if instance_status.Name == instance_spec.Name {
+				desired_replicas := *instance_spec.Replicas
+				if instance_status.Replicas != desired_replicas ||
+					instance_status.ReadyReplicas != desired_replicas ||
+					instance_status.UpdatedReplicas != desired_replicas {
+					return false
+				}
+				// Found instance in Status, breaking out of for loop
+				status_found = true
+				break
+			}
+		}
+
+		// Instance found in spec, but not in status
+		if !status_found {
+			return false
+		}
+	}
+
+	// All instances have the correct number of replicas
+	return true
+}
+
+func (r *SynapseReconciler) updateSynapseStatusDatabaseState(ctx context.Context, synapse synapsev1alpha1.Synapse, state string) error {
+	current := &synapsev1alpha1.Synapse{}
+
+	r.Get(
+		ctx,
+		types.NamespacedName{Name: synapse.Name, Namespace: synapse.Namespace},
+		current,
+	)
+
+	synapse.Status.DatabaseConnectionInfo.State = state
+
+	if !reflect.DeepEqual(synapse.Status, current.Status) {
+		if err := r.Status().Patch(ctx, &synapse, client.MergeFrom(current)); err != nil {
+			return err
+		}
+	}
 
 	return nil
 }
@@ -303,6 +375,7 @@ func (r *SynapseReconciler) updateSynapseStatusDatabase(
 	s.Status.DatabaseConnectionInfo.DatabaseName = "synapse"
 	s.Status.DatabaseConnectionInfo.User = string(user)
 	s.Status.DatabaseConnectionInfo.Password = string(base64encode(string(password)))
+	s.Status.DatabaseConnectionInfo.State = "READY"
 
 	return nil
 }

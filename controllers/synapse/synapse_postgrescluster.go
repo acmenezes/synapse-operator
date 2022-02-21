@@ -92,41 +92,6 @@ func (r *SynapseReconciler) configMapForPostgresCluster(s *synapsev1alpha1.Synap
 	return configMap
 }
 
-func (r *SynapseReconciler) isPostgresClusterReady(p pgov1beta1.PostgresCluster) bool {
-	var status_found bool
-
-	// // Get latest version of PostgresCluster
-	// if err := r.Client.Get(context.TODO(), types.NamespacedName{Name: p.Name, Namespace: p.Namespace}, &p); err != nil {
-	// 	return false
-	// }
-
-	// Going through instance Specs
-	for _, instance_spec := range p.Spec.InstanceSets {
-		status_found = false
-		for _, instance_status := range p.Status.InstanceSets {
-			if instance_status.Name == instance_spec.Name {
-				desired_replicas := *instance_spec.Replicas
-				if instance_status.Replicas != desired_replicas ||
-					instance_status.ReadyReplicas != desired_replicas ||
-					instance_status.UpdatedReplicas != desired_replicas {
-					return false
-				}
-				// Found instance in Status, breaking out of for loop
-				status_found = true
-				break
-			}
-		}
-
-		// Instance found in spec, but not in status
-		if !status_found {
-			return false
-		}
-	}
-
-	// All instances have the correct number of replicas
-	return true
-}
-
 func base64encode(to_encode string) []byte {
 	return []byte(b64.StdEncoding.EncodeToString([]byte(to_encode)))
 }
