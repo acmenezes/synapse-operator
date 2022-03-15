@@ -12,6 +12,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"gopkg.in/yaml.v2"
+	admissionv1beta1 "k8s.io/api/admission/v1beta1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -79,6 +80,7 @@ var _ = Describe("Integration tests for the Synapse controller", Ordered, Label(
 
 		Expect(synapsev1alpha1.AddToScheme(scheme.Scheme)).NotTo(HaveOccurred())
 		Expect(pgov1beta1.AddToScheme(scheme.Scheme)).NotTo(HaveOccurred())
+		Expect(admissionv1beta1.AddToScheme(scheme.Scheme)).NotTo(HaveOccurred())
 
 		//+kubebuilder:scaffold:scheme
 
@@ -86,9 +88,21 @@ var _ = Describe("Integration tests for the Synapse controller", Ordered, Label(
 		Expect(err).NotTo(HaveOccurred())
 		Expect(k8sClient).NotTo(BeNil())
 
+		webhookInstallOptions := &testEnv.WebhookInstallOptions
+
 		k8sManager, err := ctrl.NewManager(cfg, ctrl.Options{
-			Scheme: scheme.Scheme,
+			Scheme:             scheme.Scheme,
+			Host:               webhookInstallOptions.LocalServingHost,
+			Port:               webhookInstallOptions.LocalServingPort,
+			CertDir:            webhookInstallOptions.LocalServingCertDir,
+			LeaderElection:     false,
+			MetricsBindAddress: "0",
 		})
+		Expect(err).ToNot(HaveOccurred())
+
+		err = ctrl.NewWebhookManagedBy(k8sManager).
+			For(&synapsev1alpha1.Synapse{}).
+			Complete()
 		Expect(err).ToNot(HaveOccurred())
 
 		err = (&SynapseReconciler{
@@ -169,7 +183,6 @@ var _ = Describe("Integration tests for the Synapse controller", Ordered, Label(
 
 	Context("When a corectly configured Kubernetes cluster is present", func() {
 		var _ = BeforeAll(func() {
-
 			logf.SetLogger(zap.New(zap.WriteTo(GinkgoWriter), zap.UseDevMode(true)))
 
 			ctx, cancel = context.WithCancel(context.TODO())
@@ -214,6 +227,9 @@ var _ = Describe("Integration tests for the Synapse controller", Ordered, Label(
 				},
 				CRDs:                  []*v1.CustomResourceDefinition{&PostgresClusterCRD},
 				ErrorIfCRDPathMissing: true,
+				WebhookInstallOptions: envtest.WebhookInstallOptions{
+					Paths: []string{filepath.Join("..", "..", "config", "webhook")},
+				},
 			}
 
 			startenvTest()
@@ -225,7 +241,7 @@ var _ = Describe("Integration tests for the Synapse controller", Ordered, Label(
 			Expect(testEnv.Stop()).NotTo(HaveOccurred())
 		})
 
-		Context("Validating Synapse CRD Schema", func() {
+		FContext("Validating Synapse CRD Schema", func() {
 			var obj map[string]interface{}
 
 			BeforeEach(func() {
@@ -257,24 +273,24 @@ var _ = Describe("Integration tests for the Synapse controller", Ordered, Label(
 					"spec": map[string]interface{}{"createNewPostgreSQL": true},
 				}),
 				// See https://github.com/opdev/synapse-operator/issues/15
-				// Entry("when Synapse spec Homeserver is empty", map[string]interface{}{
-				// 	"spec": map[string]interface{}{
-				// 		"homeserver": map[string]interface{}{},
-				// 	},
-				// }),
-				// Entry("when Synapse spec Homeserver possess both Values and ConfigMap", map[string]interface{}{
-				// 	"spec": map[string]interface{}{
-				// 		"homeserver": map[string]interface{}{
-				// 			"configMap": map[string]interface{}{
-				// 				"name":      ConfigMapName,
-				// 				"namespace": SynapseNamespace,
-				// 			},
-				// 			"values": map[string]interface{}{
-				// 				"serverName":  ServerName,
-				// 				"reportStats": ReportStats,
-				// 			},
-				// 		}},
-				// }),
+				Entry("when Synapse spec Homeserver is empty", map[string]interface{}{
+					"spec": map[string]interface{}{
+						"homeserver": map[string]interface{}{},
+					},
+				}),
+				Entry("when Synapse spec Homeserver possess both Values and ConfigMap", map[string]interface{}{
+					"spec": map[string]interface{}{
+						"homeserver": map[string]interface{}{
+							"configMap": map[string]interface{}{
+								"name":      ConfigMapName,
+								"namespace": SynapseNamespace,
+							},
+							"values": map[string]interface{}{
+								"serverName":  ServerName,
+								"reportStats": ReportStats,
+							},
+						}},
+				}),
 				Entry("when Synapse spec Homeserver ConfigMap doesn't specify a Name", map[string]interface{}{
 					"spec": map[string]interface{}{
 						"homeserver": map[string]interface{}{

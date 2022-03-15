@@ -6,4 +6,5 @@ spec:
   createNewPostgreSQL: true
   homeserver:
     configMap:
-      name: synapse-homeserver-simple
+      name: synapse-homeserver
+

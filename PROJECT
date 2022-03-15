@@ -17,4 +17,7 @@ resources:
   kind: Synapse
   path: github.com/opdev/synapse-operator/apis/synapse/v1alpha1
   version: v1alpha1
+  webhooks:
+    validation: true
+    webhookVersion: v1
 version: "3"
